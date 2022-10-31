@@ -109,6 +109,7 @@ type Logger struct {
 	Appenders    []Appender
 	StripDirs    int
 	TurboFilters []TurboFilter
+	LevelsToSkip int
 }
 
 // Log a message and a level to a logger instance. This returns a
@@ -150,11 +151,13 @@ func (e ErrorWithCode) Unwrap() error {
 }
 
 func (self *Logger) Errorf(level Level, messageFmt string, args ...interface{}) error {
-	return self.ErrorfWithContext(level, messageFmt, nil, args...)
+	log, _ := self.logf(level, NoErrorCode, messageFmt, nil, args...)
+	return ErrorWithCode{NoErrorCode, errors.New(log.Message())}
 }
 
 func (self *Logger) ErrorfWithContext(level Level, messageFmt string, context *Context, args ...interface{}) error {
-	return self.ErrorfWithErrorCodeAndContext(level, NoErrorCode, messageFmt, context, args...)
+	log, _ := self.logf(level, NoErrorCode, messageFmt, context, args...)
+	return ErrorWithCode{NoErrorCode, errors.New(log.Message())}
 }
 
 func (self *Logger) ErrorfWithErrorCodeAndContext(level Level, errorCode ErrorCode, messageFmt string, context *Context, args ...interface{}) error {
@@ -176,11 +179,13 @@ func (self *Logger) Flush() (errors []error) {
 // parameter. `stackErr` is expected to be of type StackError, but does
 // not have to be.
 func (self *Logger) Stackf(level Level, stackErr error, messageFmt string, args ...interface{}) (*Log, []error) {
-	return self.StackfWithContext(level, stackErr, messageFmt, nil, args...)
+	messageFmt = fmt.Sprintf("%v\n%v", messageFmt, stackErr.Error())
+	return self.logf(level, NoErrorCode, messageFmt, nil, args...)
 }
 
 func (self *Logger) StackfWithContext(level Level, stackErr error, messageFmt string, context *Context, args ...interface{}) (*Log, []error) {
-	return self.StackfWithErrorCodeAndContext(level, NoErrorCode, stackErr, messageFmt, context, args...)
+	messageFmt = fmt.Sprintf("%v\n%v", messageFmt, stackErr.Error())
+	return self.logf(level, NoErrorCode, messageFmt, context, args...)
 }
 
 func (self *Logger) StackfWithErrorCodeAndContext(level Level, errorCode ErrorCode, stackErr error, messageFmt string, context *Context, args ...interface{}) (*Log, []error) {
@@ -228,8 +233,11 @@ func containsAnyIgnoredFilename(s string) bool {
 	return false
 }
 
-func nonSloggerCaller() (pc uintptr, file string, line int, ok bool) {
-	for skip := 1; skip < 100; skip++ {
+func nonSloggerCaller(levelsToSkip int) (pc uintptr, file string, line int, ok bool) {
+	if levelsToSkip > 0 {
+		return runtime.Caller(levelsToSkip + 3)
+	}
+	for skip := 3; skip < 100; skip++ {
 		pc, file, line, ok := runtime.Caller(skip)
 		if !ok || !containsAnyIgnoredFilename(file) {
 			return pc, file, line, ok
@@ -247,7 +255,7 @@ func (self *Logger) logf(level Level, errorCode ErrorCode, messageFmt string, co
 		}
 	}
 
-	pc, file, line, ok := nonSloggerCaller()
+	pc, file, line, ok := nonSloggerCaller(self.LevelsToSkip)
 	if ok == false {
 		return nil, []error{fmt.Errorf("Failed to find the calling method.")}
 	}
