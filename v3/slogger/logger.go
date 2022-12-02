@@ -15,13 +15,36 @@
 package slogger
 
 import (
-	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
+
+type asyncExecutor struct {
+	execFunc chan func() error
+}
+
+var executor asyncExecutor
+
+func init() {
+	executor = asyncExecutor{
+		execFunc: make(chan func() error),
+	}
+
+	go func() {
+		for {
+			select {
+			case f := <- executor.execFunc:
+				if err := f(); err != nil {
+					fmt.Fprintf(os.Stderr, "Encountered an error while logging. %v\n", err)
+				}
+			}
+		}
+	}()
+}
 
 var loggerConfigLock sync.RWMutex
 
@@ -117,30 +140,13 @@ type Logger struct {
 	StripDirs    int
 }
 
-// Log a message and a level to a logger instance. This returns a
-// pointer to a Log and a slice of errors that were gathered from every
-// Appender (nil errors included), or nil and an empty error slice if
-// any turbo filter condition was not satisfied causing an early exit.
-func (self *Logger) Logf(level Level, messageFmt string, args ...any) (*Log, []error) {
-	return self.logf(level, NoErrorCode, messageFmt, nil, args...)
+func (self *Logger) Logf(level Level, messageFmt string, args ...any) {
+	self.logf(level, NoErrorCode, messageFmt, nil, args...)
 }
 
-func (self *Logger) LogfWithContext(level Level, messageFmt string, context *Context, args ...any) (*Log, []error) {
-	return self.logf(level, NoErrorCode, messageFmt, context, args...)
+func (self *Logger) LogfWithErrorCodeAndContext(level Level, errorCode ErrorCode, messageFmt string, context *Context, args ...any) {
+	self.logf(level, errorCode, messageFmt, context, args...)
 }
-
-func (self *Logger) LogfWithErrorCodeAndContext(level Level, errorCode ErrorCode, messageFmt string, context *Context, args ...any) (*Log, []error) {
-	return self.logf(level, errorCode, messageFmt, context, args...)
-}
-
-// Log and return a formatted error string.
-// Example:
-//
-// if whatIsExpected != whatIsReturned {
-//     return slogger.Errorf(slogger.WARN, "Unexpected return value. Expected: %v Received: %v",
-//         whatIsExpected, whatIsReturned)
-// }5
-//
 
 type ErrorWithCode struct {
 	ErrCode ErrorCode
@@ -155,43 +161,14 @@ func (e ErrorWithCode) Unwrap() error {
 	return e.Err
 }
 
-func (self *Logger) Errorf(level Level, messageFmt string, args ...any) error {
-	return self.ErrorfWithContext(level, messageFmt, nil, args...)
-}
-
-func (self *Logger) ErrorfWithContext(level Level, messageFmt string, context *Context, args ...any) error {
-	return self.ErrorfWithErrorCodeAndContext(level, NoErrorCode, messageFmt, context, args...)
-}
-
-func (self *Logger) ErrorfWithErrorCodeAndContext(level Level, errorCode ErrorCode, messageFmt string, context *Context, args ...any) error {
-	log, _ := self.logf(level, errorCode, messageFmt, context, args...)
-	return ErrorWithCode{errorCode, errors.New(log.Message())}
-}
-
-func (self *Logger) Flush() (errors []error) {
+func (self *Logger) Flush() {
 	for _, appender := range self.Appenders {
-		if err := appender.Flush(); err != nil {
-			errors = append(errors, err)
-		}
+		executor.execFunc <- func() error { return appender.Flush() }
 	}
-	return
 }
 
-// Stackf is designed to work in tandem with `NewStackError`. This
-// function is similar to `Logf`, but takes a `stackErr`
-// parameter. `stackErr` is expected to be of type StackError, but does
-// not have to be.
-func (self *Logger) Stackf(level Level, stackErr error, messageFmt string, args ...any) (*Log, []error) {
-	return self.StackfWithContext(level, stackErr, messageFmt, nil, args...)
-}
-
-func (self *Logger) StackfWithContext(level Level, stackErr error, messageFmt string, context *Context, args ...any) (*Log, []error) {
-	return self.StackfWithErrorCodeAndContext(level, NoErrorCode, stackErr, messageFmt, context, args...)
-}
-
-func (self *Logger) StackfWithErrorCodeAndContext(level Level, errorCode ErrorCode, stackErr error, messageFmt string, context *Context, args ...any) (*Log, []error) {
-	messageFmt = fmt.Sprintf("%v\n%v", messageFmt, stackErr.Error())
-	return self.logf(level, errorCode, messageFmt, context, args...)
+func (self *Logger) Stackf(level Level, errorCode ErrorCode, stackErr error, messageFmt string, context *Context, args ...any) {
+	self.logf(level, errorCode, fmt.Sprintf("%v\n%v", messageFmt, stackErr.Error()), context, args...)
 }
 
 var ignoredFileNames = []string{"logger.go"}
@@ -249,9 +226,7 @@ func nonSloggerCaller() (pc uintptr, file string, line int, ok bool) {
 	return 0, "", 0, false
 }
 
-func (self *Logger) logf(level Level, errorCode ErrorCode, messageFmt string, context *Context, args ...any) (*Log, []error) {
-	var errors []error
-
+func (self *Logger) logf(level Level, errorCode ErrorCode, messageFmt string, context *Context, args ...any) {
 	allow := false
 	for _, appender := range self.Appenders {
 		if appender.Allow(level) {
@@ -261,12 +236,12 @@ func (self *Logger) logf(level Level, errorCode ErrorCode, messageFmt string, co
 	}
 
 	if !allow {
-		return nil, []error{fmt.Errorf("None of the registered appenders allow logging.")}
+		return
 	}
 
 	pc, file, line, ok := nonSloggerCaller()
-	if ok == false {
-		return nil, []error{fmt.Errorf("Failed to find the calling method.")}
+	if !ok {
+		return
 	}
 
 	file = stripDirectories(file, self.StripDirs)
@@ -285,14 +260,9 @@ func (self *Logger) logf(level Level, errorCode ErrorCode, messageFmt string, co
 
 	for _, appender := range self.Appenders {
 		if appender.Allow(level) {
-			if err := appender.Append(log); err != nil {
-				error := fmt.Errorf("Error appending. Appender: %T Error: %v", appender, err)
-				errors = append(errors, error)
-			}
+			executor.execFunc <- func() error { return appender.Append(log) }
 		}
 	}
-
-	return log, errors
 }
 
 type Level uint8

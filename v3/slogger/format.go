@@ -24,7 +24,7 @@ func formatLog(log *Log, timePart string) string {
 		errorCodeStr += fmt.Sprintf("[%v] ", log.ErrorCode)
 	}
 
-	structuredLog, err := json.Marshal(map[string]string{
+	structuredLog, _ := json.Marshal(map[string]string{
 		"time": timePart,
 		"prefix": log.Prefix,
 		"level": log.Level.Type(),
@@ -34,6 +34,8 @@ func formatLog(log *Log, timePart string) string {
 		"error": strconv.Itoa(int(log.ErrorCode)),
 		"msg": log.Message(),
 	})
+
+	return string(structuredLog)
 }
 
 func convertOffsetToString(offset int) string {

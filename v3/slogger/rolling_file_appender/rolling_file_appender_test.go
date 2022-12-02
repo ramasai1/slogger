@@ -16,8 +16,6 @@ package rolling_file_appender
 
 import (
 	"github.com/mongodb/slogger/v3/slogger"
-	. "github.com/mongodb/slogger/v3/slogger/test_util"
-
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -28,23 +26,26 @@ import (
 
 const rfaTestLogDir = "log"
 const rfaTestLogFilename = "logger_rfa_test.log"
+const rfaStderrPath = "stderr.log"
 const rfaTestLogPath = rfaTestLogDir + "/" + rfaTestLogFilename
+const rfaStdoutLogPath = rfaTestLogDir + "/" + rfaStderrPath
+
+var stderr = os.Stderr
 
 func TestLog(test *testing.T) {
-	// defer teardown()
+	defer teardown()
+
 	appender, logger := setup(test, 1000, 0, 10, false)
 	defer appender.Close()
 
-	_, errs := logger.Logf(slogger.WARN, "This is a log message")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
-
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is a log message")
 	assertCurrentLogContains(test, "This is a log message")
 
 	appender.SetLevel(slogger.WARN)
-	_, errs = logger.Logf(slogger.INFO, "This is an info message being fed to a WARN logger")
-	AssertErrorExists(test, errs, "None of the registered appenders allow logging.")
-	// AssertNoErrors(test, errs)
+	logAndWaitAndCheckError(test, logger, slogger.INFO, "This is an info message being fed to a WARN logger")
+	assertCurrentLogDoesNotContain(test, "This is an info message being fed to a WARN logger")
+
+	flushAndWaitAndCheckError(test, logger)
 }
 
 func TestNoRotation(test *testing.T) {
@@ -53,10 +54,9 @@ func TestNoRotation(test *testing.T) {
 	appender, logger := setup(test, 1000, 0, 10, false)
 	defer appender.Close()
 
-	_, errs := logger.Logf(slogger.WARN, "This is under 1,000 characters and should not cause a log rotation")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
-
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is under 1,000 characters and should not cause a log rotation")
+	assertCurrentLogContains(test, "This is under 1,000 characters and should not cause a log rotation")
+	flushAndWaitAndCheckError(test, logger)
 	assertNumLogFiles(test, 1)
 }
 
@@ -66,10 +66,8 @@ func TestNoRotation2(test *testing.T) {
 	appender, logger := setup(test, -1, 0, 10, false)
 	defer appender.Close()
 
-	_, errs := logger.Logf(slogger.WARN, "This should not cause a log rotation")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
-
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This should not cause a log rotation")
+	flushAndWaitAndCheckError(test, logger)
 	assertNumLogFiles(test, 1)
 }
 
@@ -79,24 +77,22 @@ func TestOldLogRemoval(test *testing.T) {
 	appender, logger := setup(test, 10, 0, 2, false)
 	defer appender.Close()
 
-	_, errs := logger.Logf(slogger.WARN, "This is more than 10 characters and should cause a log rotation")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is more than 10 characters and should cause a log rotation")
+	flushAndWaitAndCheckError(test, logger)
 	assertNumLogFiles(test, 2)
 
-	_, errs = logger.Logf(slogger.WARN, "This is more than 10 characters and should cause a log rotation")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is more than 10 characters and should cause a log rotation")
+	flushAndWaitAndCheckError(test, logger)
 	assertNumLogFiles(test, 3)
 
-	_, errs = logger.Logf(slogger.WARN, "This is more than 10 characters and should cause a log rotation")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is more than 10 characters and should cause a log rotation")
+	flushAndWaitAndCheckError(test, logger)
 	assertNumLogFiles(test, 3)
 }
 
 func TestPreRotation(test *testing.T) {
 	createLogDir(test)
+	switchStdoutToFile()
 
 	file, err := os.Create(rfaTestLogPath)
 	if err != nil {
@@ -110,7 +106,7 @@ func TestPreRotation(test *testing.T) {
 
 	appender, logger := newAppenderAndLogger(test, 1000, 0, 2, true)
 	defer appender.Close()
-	AssertNoErrors(test, logger.Flush())
+	flushAndWaitAndCheckError(test, logger)
 	assertNumLogFiles(test, 2)
 }
 
@@ -120,9 +116,8 @@ func TestRotationSizeBased(test *testing.T) {
 	appender, logger := setup(test, 10, 0, 10, false)
 	defer appender.Close()
 
-	_, errs := logger.Logf(slogger.WARN, "This is more than 10 characters and should cause a log rotation")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is more than 10 characters and should cause a log rotation")
+	flushAndWaitAndCheckError(test, logger)
 
 	assertNumLogFiles(test, 2)
 }
@@ -136,14 +131,13 @@ func TestRotationTimeBased(test *testing.T) {
 
 		assertNumLogFiles(test, 1)
 		time.Sleep(time.Second + 50*time.Millisecond)
-		_, errs := logger.Logf(slogger.WARN, "Trigger log rotation 1")
-		AssertNoErrors(test, errs)
+		logAndWaitAndCheckError(test, logger, slogger.WARN, "Trigger log rotation 1")
 		assertNumLogFiles(test, 2)
 
 		time.Sleep(time.Second + 50*time.Millisecond)
-		_, errs = logger.Logf(slogger.WARN, "Trigger log rotation 2")
-		AssertNoErrors(test, errs)
+		logAndWaitAndCheckError(test, logger, slogger.WARN, "Trigger log rotation 2")
 		assertNumLogFiles(test, 3)
+		flushAndWaitAndCheckError(test, logger)
 	}()
 
 	// Test that time-based log rotation still works if we recreate
@@ -153,9 +147,9 @@ func TestRotationTimeBased(test *testing.T) {
 
 	assertNumLogFiles(test, 3)
 	time.Sleep(time.Second + 50*time.Millisecond)
-	_, errs := logger.Logf(slogger.WARN, "Trigger log rotation 3")
-	AssertNoErrors(test, errs)
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "Trigger log rotation 3")
 	assertNumLogFiles(test, 4)
+	flushAndWaitAndCheckError(test, logger)
 }
 
 func TestRotationManual(test *testing.T) {
@@ -184,9 +178,8 @@ func TestReopen(test *testing.T) {
 	appender, logger := setup(test, 0, 0, 0, false)
 	defer appender.Close()
 
-	_, errs := logger.Logf(slogger.WARN, "This is a log message 1")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is a log message 1")
+	flushAndWaitAndCheckError(test, logger)
 
 	assertCurrentLogContains(test, "This is a log message 1")
 
@@ -201,9 +194,8 @@ func TestReopen(test *testing.T) {
 
 	assertLogContains(test, rotatedLogPath, "This is a log message 1")
 
-	_, errs = logger.Logf(slogger.WARN, "This is a log message 2")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is a log message 2")
+	flushAndWaitAndCheckError(test, logger)
 
 	assertLogContains(test, rotatedLogPath, "This is a log message 2")
 	if err := appender.Reopen(); err != nil {
@@ -216,9 +208,8 @@ func TestReopen(test *testing.T) {
 	assertCurrentLogDoesNotContain(test, "This is a log message 1")
 	assertCurrentLogDoesNotContain(test, "This is a log message 2")
 
-	_, errs = logger.Logf(slogger.WARN, "This is a log message 3")
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, "This is a log message 3")
+	flushAndWaitAndCheckError(test, logger)
 
 	assertCurrentLogContains(test, "This is a log message 3")
 	assertLogDoesNotContain(test, rotatedLogPath, "This is a log message 3")
@@ -234,9 +225,8 @@ func TestCompressionOnRotation(test *testing.T) {
 
 	compressibleMessage := strings.Repeat("This string is easily compressible", 1000)
 
-	_, errs := logger.Logf(slogger.WARN, compressibleMessage)
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, compressibleMessage)
+	flushAndWaitAndCheckError(test, logger)
 
 	checkFiles := func() (compressedLogFiles, sizeCompressedFile int) {
 		err := filepath.Walk(rfaTestLogDir, func(_ string, info os.FileInfo, err error) error {
@@ -261,9 +251,8 @@ func TestCompressionOnRotation(test *testing.T) {
 		test.Errorf("expected to find no compressed log files")
 	}
 
-	_, errs = logger.Logf(slogger.WARN, compressibleMessage)
-	AssertNoErrors(test, errs)
-	AssertNoErrors(test, logger.Flush())
+	logAndWaitAndCheckError(test, logger, slogger.WARN, compressibleMessage)
+	flushAndWaitAndCheckError(test, logger)
 	compressedLogFiles, sizeCompressedFile := checkFiles()
 	assertNumLogFiles(test, 3)
 	if compressedLogFiles != 1 {
@@ -368,7 +357,17 @@ func numLogFiles() (int, error) {
 		}
 	}
 
-	return len(visibleFilenames), nil
+	// Subtracting 1 to account for stdout.log (which is overridden in the test).
+	return len(visibleFilenames) - 1, nil
+}
+
+func readStdout(test *testing.T) string {
+	bytes, err := ioutil.ReadFile(rfaStdoutLogPath)
+	if err != nil {
+		test.Fatal("Could not read stdout file")
+	}
+
+	return string(bytes)
 }
 
 func readLog(test *testing.T, logPath string) string {
@@ -380,12 +379,32 @@ func readLog(test *testing.T, logPath string) string {
 	return string(bytes)
 }
 
+func logAndWaitAndCheckError(test *testing.T, logger *slogger.Logger, level slogger.Level, msgFmt string, args ...any) {
+	logger.Logf(level, msgFmt, args...)
+	time.Sleep(30 * time.Millisecond)
+	assertLogDoesNotContain(test, rfaStdoutLogPath, "Encountered an error while logging.")
+}
+
+func flushAndWaitAndCheckError(test *testing.T, logger *slogger.Logger) {
+	logger.Flush()
+	time.Sleep(50 * time.Millisecond)
+	assertLogDoesNotContain(test, rfaStdoutLogPath, "Encountered an error while logging.")
+}
+
 func setup(test *testing.T, maxFileSize int64, maxDuration time.Duration, maxRotatedLogs int, rotateIfExists bool) (appender *RollingFileAppender, logger *slogger.Logger) {
 	createLogDir(test)
+	switchStdoutToFile()
 
 	return newAppenderAndLogger(test, maxFileSize, maxDuration, maxRotatedLogs, rotateIfExists)
 }
 
+func switchStdoutToFile() {
+	temp, _ := os.Create(rfaStdoutLogPath) // create temp file
+	os.Stderr = temp
+}
+
 func teardown() {
 	os.RemoveAll(rfaTestLogDir)
+	os.RemoveAll(rfaStdoutLogPath)
+	os.Stderr = stderr
 }

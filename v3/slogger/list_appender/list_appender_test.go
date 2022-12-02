@@ -4,6 +4,7 @@ import (
 	"github.com/mongodb/slogger/v3/slogger"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLog(test *testing.T) {
@@ -12,6 +13,9 @@ func TestLog(test *testing.T) {
 	logMsg := "this is a test log message"
 	logger.Logf(slogger.WARN, logMsg)
 	logFound := false
+
+	time.Sleep(50 * time.Millisecond)
+
 	for _, log := range appender.GetLogs() {
 		if strings.Contains(log, logMsg) {
 			logFound = true
@@ -28,6 +32,8 @@ func TestLog(test *testing.T) {
 	appender.SetLevel(slogger.WARN)
 	logger.Logf(slogger.INFO, logMsg)
 	logFound = false
+
+	time.Sleep(50 * time.Millisecond)
 	for _, log := range appender.GetLogs() {
 		if strings.Contains(log, logMsg) {
 			logFound = true
